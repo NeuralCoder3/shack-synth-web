@@ -23,7 +23,16 @@ cmovg a b -- move b to a if greater flag is set
 mov a b   -- move b to a
 """
 
-# swap => works
+# best to call `python test_sort.py -d 1 -m 12`
+# swap                 => works
+# swap+cmps+cmovg      => 4s
+# swap+cmps+cmovlg     => 9s
+# swap+cmps+cmovlg+mov => 7s
+# cmps+cmovg           => 1104s @12
+# cmps+cmovg           => 2443s (found 11)
+# cmps+cmovlg          => 5323s @11
+# cmps+cmovlg          => 8098s @12
+# cmps+cmovlg+mov      => @11
 
 class Sort:
     def __init__(self, regs, swap=1):
@@ -42,6 +51,7 @@ class Sort:
         cmps = []
         cmovls = []
         cmovgs = []
+        movs = []
         swaps = []
         # compare
         for a in range(self.total_regs):
@@ -83,15 +93,22 @@ class Sort:
                             )
                         )
                     )
+                    
+                    movs.append(
+                        Func(f'mov_{a}_{b}',
+                            Store(x, a, Select(x, b)),
+                        )
+                    )
 
         
         self.cmps = cmps
         self.swaps = swaps
         self.cmovls = cmovls
         self.cmovgs = cmovgs
+        self.movs = movs
         self.Id = Func('Id', x)
         
-        self.cmds = self.cmps + self.swaps + self.cmovls + self.cmovgs + [self.Id]
+        self.cmds = self.cmps + self.swaps + self.cmovls + self.cmovgs + self.movs + [self.Id]
         for cmd in self.cmds:
             setattr(self, cmd.name, cmd)
 
@@ -103,6 +120,8 @@ class SortBench(TestBase):
         self.ops = []
         self.ops += self.sort.cmps
         self.ops += self.sort.cmovgs
+        self.ops += self.sort.cmovls
+        self.ops += self.sort.movs
         # self.ops += self.sort.swaps
         # self.ops += [self.sort.Id]
 
@@ -137,7 +156,8 @@ class SortBench(TestBase):
                     [ x ], # input
                     [ And(pred) ] # precondition
         )
-        return self.do_synth('sort', spec, self.ops, desc='sort using swap', max_const=0) # Note: max const does not prevent a return constant
+        # Note: max const does not prevent a return constant
+        return self.do_synth('sort', spec, self.ops, desc='sort using swap', max_const=0, opt_no_dead_code=True) 
     
     
 def validate():

@@ -1,0 +1,25 @@
+With the example, the result is guaranteed to be sorted.
+sort (sort using swap): size 12
+sample 0 [K(Int, 4)]
+sample 1 [Store(Store(Store(Store(Store(Store(K(Int, 25), 1...
+sample 2 [Store(Store(Store(Store(Store(Store(Store(K(Int, ...
+sample 3 [Store(Store(Store(Store(Store(Store(K(Int, 14), 1...
+sample 4 [Store(Store(Store(Store(Store(Store(K(Int, 12), 1...
+sample 5 [Store(Store(Store(Store(Store(Store(K(Int, 12), 1...
+no counter example found
+1104.281s
+x1 = cmp_0_1(x)
+x2 = cmovg_3_0(x1)
+x3 = cmovg_0_1(x2)
+x4 = cmovg_1_3(x3)
+x5 = cmovg_3_0(x4)
+x6 = cmp_1_2(x5)
+x7 = cmovg_3_2(x6)
+x8 = cmovg_2_1(x7)
+x9 = cmovg_1_3(x8)
+x10 = cmp_0_1(x9)
+x11 = cmovg_1_0(x10)
+x12 = cmovg_0_3(x11)
+return(x12)
+
+total time: 1104.281s
