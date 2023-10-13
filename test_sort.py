@@ -2,6 +2,7 @@
 
 from z3 import *
 from synth import *
+from synth import _collect_vars
 
 """
 We handle imperative programs with mutation
@@ -22,11 +23,13 @@ cmovg a b -- move b to a if greater flag is set
 mov a b   -- move b to a
 """
 
+# swap => works
 
 class Sort:
     def __init__(self, regs, swap=1):
         self.regs = regs
         self.swap = swap
+        self.total_regs = regs+swap
         # TODO: limit bitwidth, length
         self.ty    = z3.ArraySort(IntSort(),IntSort())
         # r1, r2, r3, s1, fl, fg
@@ -41,13 +44,13 @@ class Sort:
         cmovgs = []
         swaps = []
         # compare
-        for a in range(self.regs):
-            for b in range(self.regs):
+        for a in range(self.total_regs):
+            for b in range(self.total_regs):
                 if a < b:
-                    # compare two registers, write the result in the flags
                     cmp = Func(f'cmp_{a}_{b}', \
                         Store(
-                            Store(x, self.regs+self.swap, If(Select(x, a)<Select(x, b), 1, 0)),
+                            Store(x, 
+                            self.regs+self.swap  , If(Select(x, a)<Select(x, b), 1, 0)),
                             self.regs+self.swap+1, If(Select(x, a)>Select(x, b), 1, 0)
                         )
                     )
@@ -66,7 +69,7 @@ class Sort:
                     cmovls.append(
                         Func(f'cmovl_{a}_{b}',
                             If(Select(x, self.regs+self.swap) == 1,
-                                Store(x, a, x[b]),
+                                Store(x, a, Select(x, b)),
                                 x
                             )
                         )
@@ -75,7 +78,7 @@ class Sort:
                     cmovgs.append(
                         Func(f'cmovg_{a}_{b}',
                             If(Select(x, self.regs+self.swap+1) == 1,
-                                Store(x, b, x[a]),
+                                Store(x, a, Select(x, b)),
                                 x
                             )
                         )
@@ -87,6 +90,10 @@ class Sort:
         self.cmovls = cmovls
         self.cmovgs = cmovgs
         self.Id = Func('Id', x)
+        
+        self.cmds = self.cmps + self.swaps + self.cmovls + self.cmovgs + [self.Id]
+        for cmd in self.cmds:
+            setattr(self, cmd.name, cmd)
 
 class SortBench(TestBase):
     def __init__(self, width, args):
@@ -94,7 +101,9 @@ class SortBench(TestBase):
         self.size = width
         self.sort    = Sort(self.size)
         self.ops = []
-        self.ops += self.sort.swaps
+        self.ops += self.sort.cmps
+        self.ops += self.sort.cmovgs
+        # self.ops += self.sort.swaps
         # self.ops += [self.sort.Id]
 
     def do_synth(self, name, spec, ops, desc='', **args):
@@ -115,8 +124,6 @@ class SortBench(TestBase):
         # sorted.append(Select(y, self.size) == 0)
         oob = self.size+1+2
         sorted.append(Select(y, oob) == Select(x, oob)) # bind y to be a mutation of x to avoid constants
-        # sorted.append(Distinct([Select(y, i) for i in range(self.size)]))
-        # sorted.append(Select(y, 0) <= Select(y, 1))
         
         pred = [] # x[0] ... x[width-1] are a permutation of 1..width-1
         pred.append(Distinct([Select(x, i) for i in range(self.size)])) # all n numbers are different
@@ -131,8 +138,68 @@ class SortBench(TestBase):
                     [ And(pred) ] # precondition
         )
         return self.do_synth('sort', spec, self.ops, desc='sort using swap', max_const=0) # Note: max const does not prevent a return constant
+    
+    
+def validate():
+    size = 3
+    sort = Sort(size)
+    s = Solver()
+    
+    x = Array('x', IntSort(), IntSort())
+    z = Array('z', IntSort(), IntSort())
+    s.add(Distinct([Select(x, i) for i in range(size)]))
+    s.add(And([And(1 <= Select(x, i), Select(x, i) <= size) for i in range(size)]))
+    s.add(And([Select(x, i) == 0 for i in range(size, size+1+2)]))
+    
+    def specialize(f, x):
+        vars = _collect_vars(f)
+        for v in vars:
+            f = substitute(f, (v, x))
+        return f
+    
+    # or use spec.instantiate(outs, inputs) with intermediate variables
+    y = x
+    # y = specialize(sort.swap_0_1.func, y)
+    # y = specialize(sort.swap_1_2.func, y)
+    # y = specialize(sort.swap_0_1.func, y)
+    
+    # swap a b = cmp a b; cmovg 3 a; cmovg a b; cmovg b 3
+    # TODO: maps would make this nicer
+    # 0 1
+    y = specialize(sort.cmp_0_1.func, y)
+    y = specialize(sort.cmovg_3_0.func, y)
+    y = specialize(sort.cmovg_0_1.func, y)
+    y = specialize(sort.cmovg_1_3.func, y)
+    
+    # 1 2
+    y = specialize(sort.cmp_1_2.func, y)
+    y = specialize(sort.cmovg_3_1.func, y)
+    y = specialize(sort.cmovg_1_2.func, y)
+    y = specialize(sort.cmovg_2_3.func, y)
+    
+    # 0 1
+    y = specialize(sort.cmp_0_1.func, y)
+    y = specialize(sort.cmovg_3_0.func, y)
+    y = specialize(sort.cmovg_0_1.func, y)
+    y = specialize(sort.cmovg_1_3.func, y)
+    
+    s.add(z == y)
+    
+    s.add(Not(And(
+        Select(z, 0) == 1,
+        Select(z, 1) == 2,
+        Select(z, 2) == 3
+    )))
+    
+    if s.check() == unsat:
+        print("With the example, the result is guaranteed to be sorted.")
+    else:
+        m = s.model()
+        for i in range(size):
+            print(m.evaluate(Select(x, i)),"->", m.evaluate(Select(z, i)))
 
 if __name__ == '__main__':
     args = parse_standard_args()
     t = SortBench(3, args)
+    validate()
     t.run()
