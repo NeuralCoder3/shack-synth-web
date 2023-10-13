@@ -32,7 +32,7 @@ mov a b   -- move b to a
 # cmps+cmovg           => 2443s (found 11)
 # cmps+cmovlg          => 5323s @11
 # cmps+cmovlg          => 8098s @12
-# cmps+cmovlg+mov      => @11
+# cmps+cmovlg+mov      => 38261s @11
 
 class Sort:
     def __init__(self, regs, swap=1):
