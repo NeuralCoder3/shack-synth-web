@@ -113,17 +113,17 @@ class Sort:
             setattr(self, cmd.name, cmd)
 
 class SortBench(TestBase):
-    def __init__(self, width, args):
+    def __init__(self, width, swap, args):
         super().__init__(**vars(args))
         self.size = width
-        self.sort    = Sort(self.size)
+        self.swap = swap
+        self.sort    = Sort(self.size, self.swap)
         self.ops = []
         self.ops += self.sort.cmps
         self.ops += self.sort.cmovgs
         self.ops += self.sort.cmovls
         self.ops += self.sort.movs
         # self.ops += self.sort.swaps
-        # self.ops += [self.sort.Id]
 
     def do_synth(self, name, spec, ops, desc='', **args):
         return super().do_synth(name, spec, ops, desc,
@@ -141,13 +141,13 @@ class SortBench(TestBase):
             sorted.append(Select(y, i) == i+1)
         
         # sorted.append(Select(y, self.size) == 0)
-        oob = self.size+1+2
+        oob = self.size+self.swap+2
         sorted.append(Select(y, oob) == Select(x, oob)) # bind y to be a mutation of x to avoid constants
         
         pred = [] # x[0] ... x[width-1] are a permutation of 1..width-1
         pred.append(Distinct([Select(x, i) for i in range(self.size)])) # all n numbers are different
         pred.append(And([And(1 <= Select(x, i), Select(x, i) <= self.size) for i in range(self.size)])) # numbers are in range 1..n
-        pred.append(And([Select(x, i) == 0 for i in range(self.size, self.size+1+2)])) # swap and flag registers are zero
+        pred.append(And([Select(x, i) == 0 for i in range(self.size, self.size+self.swap+2)])) # swap and flag registers are zero
         
         spec = Spec('sort',
                     # [ Implies(And(pred), And(sorted)) ],
@@ -157,7 +157,7 @@ class SortBench(TestBase):
                     [ And(pred) ] # precondition
         )
         # Note: max const does not prevent a return constant
-        return self.do_synth('sort', spec, self.ops, desc='sort using swap', max_const=0, opt_no_dead_code=True) 
+        return self.do_synth('sort', spec, self.ops, desc='sort using assembly', max_const=0, opt_no_dead_code=True) 
     
     
 def validate():
@@ -220,6 +220,6 @@ def validate():
 
 if __name__ == '__main__':
     args = parse_standard_args()
-    t = SortBench(3, args)
+    t = SortBench(3, 1, args)
     validate()
     t.run()
