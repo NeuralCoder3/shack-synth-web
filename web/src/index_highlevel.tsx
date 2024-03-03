@@ -16,9 +16,9 @@ window.z3Promise = z3.init();
   // use the low-level API:
   // console.log('### running the low-level API')
   let { Z3 } = await window.z3Promise;
-  let config = Z3.mk_config();
-  let ctx = Z3.mk_context_rc(config);
-  Z3.del_config(config);
+  // let config = Z3.mk_config();
+  // let ctx = Z3.mk_context_rc(config);
+  // Z3.del_config(config);
   // let command = `
   //   (declare-const a Int)
   //   (declare-fun f (Int Bool) Int)
@@ -31,10 +31,23 @@ window.z3Promise = z3.init();
   // Z3.del_context(ctx);
 
 
-  function _collect_vars<Name extends string = 'main'>(expr : z3.Z3_ast) 
-  : Set<z3.Z3_ast> {
-    let vars = new Set<z3.Z3_ast>();
-    function collect(expr : z3.Z3_ast) {
+
+  /*
+
+  translation notes:
+  - types as z3.Bool, z3.AnyExpr
+  - handle contexts formally but use global context object instead of creating new ones
+  - handle context names in Context and AnyExpr as Name
+  - use ctx.Operation for operations like And, Or, etc.
+  - check is a promise -> async function and await result
+
+  */
+
+
+  function _collect_vars<Name extends string = 'main'>(expr : z3.AnyExpr<Name>) 
+  : Set<z3.AnyExpr<Name>> {
+    let vars = new Set<z3.AnyExpr<Name>>();
+    function collect(expr : z3.AnyExpr<Name>) {
       if (expr.children().length === 0 && expr.decl().kind() === z3.Z3_decl_kind.Z3_OP_UNINTERPRETED) {
         vars.add(expr);
       } else {
@@ -47,24 +60,28 @@ window.z3Promise = z3.init();
     return vars;
   }
 
+type Name = "main";
+let { Context } = await window.z3Promise;
+// let { Solver, Int } = Context('main');
+const ctx = Context("main");
 
 // Name extends string
 class Spec{
-    name: string;
-    ctx: z3.Z3_context
+    name: Name;
+    ctx: z3.Context<Name>;
     arity: number;
-    inputs: z3.Z3_ast[];
-    outputs: z3.Z3_ast[];
-    phis: z3.Z3_ast[];
-    preconds: z3.Z3_ast[];
-    vars: Set<z3.Z3_ast>;
+    inputs: z3.Expr[];
+    outputs: z3.Expr[];
+    phis: z3.Bool[];
+    preconds: z3.Bool[];
+    vars: Set<z3.Expr>;
 
     constructor(
-        name: string,
-        phis: z3.Z3_ast[],
-        outputs: z3.Z3_ast[],
-        inputs: z3.Z3_ast[],
-        preconds: z3.Z3_ast[] | null = null
+        name: Name,
+        phis: z3.Bool[],
+        outputs: z3.Expr[],
+        inputs: z3.Expr[],
+        preconds: z3.Bool[] | null = null
     ) {
         // Input validations
         if (phis.length === 0) {
@@ -77,16 +94,15 @@ class Spec{
             throw new Error('Number of preconditions must match');
         }
 
-        // this.ctx = phis[0].ctx; // Assuming ctx is an attribute of the first phi
-        this.ctx = ctx;
+        this.ctx = phis[0].ctx; // Assuming ctx is an attribute of the first phi
         this.name = name;
         this.arity = inputs.length;
         this.inputs = inputs;
         this.outputs = outputs;
         this.phis = phis;
-        this.preconds = preconds ? preconds : Array.from({ length: outputs.length }, () => Z3.mk_true(ctx));
+        this.preconds = preconds ? preconds : Array.from({ length: outputs.length }, () => this.ctx.Bool.val(true));
         // union(vars(phi) for phi in phis)
-        this.vars = phis.reduce((acc, phi) => new Set([...acc, ..._collect_vars(phi)]), new Set<z3.Z3_ast>());
+        this.vars = phis.reduce((acc, phi) => new Set([...acc, ..._collect_vars(phi)]), new Set<z3.Expr>());
 
         const allVars = [...outputs, ...inputs];
         if (new Set(allVars).size !== allVars.length) {
@@ -110,95 +126,73 @@ class Spec{
         return this.name;
     }
 
-    translate<N extends string>(ctx: z3.Z3_context): Spec {
+    translate<N extends string>(ctx: z3.Context<N>): Spec {
         // const ins = this.inputs.map(x => x.translate(ctx));
         // const outs = this.outputs.map(x => x.translate(ctx));
         // const pres = this.preconds.map(x => x.translate(ctx));
         // const phis = this.phis.map(x => x.translate(ctx));
-        const ins = this.inputs.map(x => Z3.translate(this.ctx,x,ctx));
-        const outs = this.outputs.map(x => Z3.translate(this.ctx,x,ctx));
-        const pres = this.preconds.map(x => Z3.translate(this.ctx,x,ctx));
-        const phis = this.phis.map(x => Z3.translate(this.ctx,x,ctx));
-        // const ins = this.inputs.map(x => x);
-        // const outs = this.outputs.map(x => x);
-        // const pres = this.preconds.map(x => x);
-        // const phis = this.phis.map(x => x);
+        const ins = this.inputs.map(x => x);
+        const outs = this.outputs.map(x => x);
+        const pres = this.preconds.map(x => x);
+        const phis = this.phis.map(x => x);
         return new Spec(this.name, phis, outs, ins, pres);
     }
 
     // Cached properties
     // could use https://stackoverflow.com/questions/74201358/whatss-the-best-way-to-cache-a-getter-without-decorators
-    get outTypes(): z3.Z3_sort[] {
-        return this.outputs.map(v => Z3.get_sort(this.ctx,v));
+    get outTypes(): z3.Sort[] {
+        return this.outputs.map(v => v.sort);
     }
 
-    get inTypes(): z3.Z3_sort[] {
-        return this.inputs.map(v => Z3.get_sort(this.ctx,v));
+    get inTypes(): z3.Sort[] {
+        return this.inputs.map(v => v.sort);
     }
 
     // get isTotal(): boolean {
     async isTotal(): Promise<boolean> {
         // const ctx = this.ctx;
-        // const solver = new ctx.Solver();
-        const solver = Z3.mk_solver(ctx);
+        const solver = new ctx.Solver();
         const spec = this.translate(ctx);
         // solver.add(Or(spec.preconds.map(p => Not(p))));
-        // solver.add(ctx.Or(...spec.preconds.map(p => p.not())));
-        Z3.solver_assert(ctx,solver,Z3.mk_or(ctx,spec.preconds));
-        // return (await solver.check() === 'unsat');
-        // Z3_L_FALSE
-        return await Z3.solver_check(ctx,solver) === -1;
+        solver.add(ctx.Or(...spec.preconds.map(p => p.not())));
+        return (await solver.check() === 'unsat');
     }
 
     // get isDeterministic(): boolean {
     async isDeterministic(): Promise<boolean> {
         // const ctx = new Context();
-        // const solver = new ctx.Solver();
-        const solver = Z3.mk_solver(ctx);
+        const solver = new ctx.Solver();
         const spec = this.translate(ctx);
-        // const ins = spec.inTypes.map(ty => ctx.FreshConst(ty));
-        // const outs = spec.outTypes.map(ty => ctx.FreshConst(ty));
-        const ins = spec.inTypes.map(ty => Z3.mk_fresh_const(ctx,"",ty));
-        const outs = spec.outTypes.map(ty => Z3.mk_fresh_const(ctx,"",ty));
+        const ins = spec.inTypes.map(ty => ctx.FreshConst(ty));
+        const outs = spec.outTypes.map(ty => ctx.FreshConst(ty));
         const [, phis] = spec.instantiate(outs, ins);
-        // solver.add(ctx.And(...spec.preconds));
-        Z3.solver_assert(ctx,solver,Z3.mk_and(ctx,spec.preconds));
+        solver.add(ctx.And(...spec.preconds));
         for (const p of spec.phis) {
-            // solver.add(p);
-            Z3.solver_assert(ctx,solver,p);
+            solver.add(p);
         }
         for (const p of phis) {
-            // solver.add(p as z3.Bool);
-            Z3.solver_assert(ctx,solver,p);
+            solver.add(p as z3.Bool);
         }
-        // solver.add(ctx.And(...spec.inputs.map((a, i) => a === ins[i])));
-        // solver.add(ctx.Or(...spec.outputs.map((a, i) => a !== outs[i])));
-        Z3.solver_assert(ctx,solver,Z3.mk_and(ctx,spec.inputs.map((a, i) => Z3.mk_eq(ctx,a,ins[i]))));
-        Z3.solver_assert(ctx,solver,Z3.mk_or(ctx,spec.outputs.map((a, i) => Z3.mk_not(ctx,Z3.mk_eq(ctx,a,outs[i])))));
-        // return await solver.check() === 'unsat';
-        return await Z3.solver_check(ctx,solver) === -1;
+        solver.add(ctx.And(...spec.inputs.map((a, i) => a === ins[i])));
+        solver.add(ctx.Or(...spec.outputs.map((a, i) => a !== outs[i])));
+        return await solver.check() === 'unsat';
     }
 
-    instantiate(outs: z3.Z3_ast[], ins: z3.Z3_ast[]): [z3.Z3_ast[], z3.Z3_ast[]] {
+    instantiate(outs: z3.Expr[], ins: z3.Expr[]): [z3.Expr[], z3.Expr[]] {
         const selfOuts = this.outputs;
         const selfIns = this.inputs;
         if (outs.length !== selfOuts.length || ins.length !== selfIns.length) {
             throw new Error('Invalid number of outputs or inputs');
         }
-        if (!outs.every((x, i) => Z3.get_sort(this.ctx,x) === Z3.get_sort(this.ctx,selfOuts[i])) || !ins.every((x, i) => Z3.get_sort(this.ctx,x) === Z3.get_sort(this.ctx,selfIns[i]))) {
-            throw new Error('Type mismatch');
+        if (!outs.every((x, i) => x.ctx === selfOuts[i].ctx) || !ins.every((x, i) => x.ctx === selfIns[i].ctx)) {
+            throw new Error('Context mismatch');
         }
-        // if (!outs.every((x, i) => x.ctx === selfOuts[i].ctx) || !ins.every((x, i) => x.ctx === selfIns[i].ctx)) {
-        //     throw new Error('Context mismatch');
-        // }
         const selfVars = [...selfOuts, ...selfIns];
         const vars = [...outs, ...ins];
-        // const phis = this.phis.map(phi => ctx.substitute(phi, 
-        //     ...selfVars.map((x, i) => [x, vars[i]] as [z3.Expr, z3.Expr])));
-        const phis = this.phis.map(phi => Z3.substitute(this.ctx,phi, selfVars, vars));
-        // const pres = this.preconds.map(p => ctx.substitute(p, 
-        //     ...selfIns.map((x, i) => [x, ins[i]] as [z3.Expr, z3.Expr])));
-        const pres = this.preconds.map(p => Z3.substitute(this.ctx,p, selfIns, ins));
+        const phis = this.phis.map(phi => ctx.substitute(phi, 
+            ...selfVars.map((x, i) => [x, vars[i]] as [z3.Expr, z3.Expr])));
+        const pres = this.preconds.map(p => ctx.substitute(p, 
+            ...selfIns.map((x, i) => [x, ins[i]] as [z3.Expr, z3.Expr])));
         return [pres, phis];
     }
 }
@@ -227,10 +221,10 @@ function permute<T>(arr: T[]): T[][] {
 }
 
 class Func extends Spec {
-    precond: z3.Z3_ast;
-    func: z3.Z3_ast;
+    precond: z3.Bool;
+    func: z3.Expr;
 
-    constructor(name: string, phi: z3.Z3_ast, precond: z3.Z3_ast = Z3.mk_true(ctx), inputs: z3.Z3_ast[] = []) {
+    constructor(name: Name, phi: z3.Expr, precond: z3.Bool = ctx.Bool.val(true), inputs: z3.Expr[] = []) {
         const inputVars = _collect_vars(phi);
         
         // If no inputs are specified, take identifiers in lexicographical order
@@ -243,11 +237,9 @@ class Func extends Spec {
             throw new Error('Precondition uses variables that are not in phi');
         }
 
-        // const resType = phi.sort; // Assuming phi has a sort method
-        const resType = Z3.get_sort(ctx,phi);
+        const resType = phi.sort; // Assuming phi has a sort method
 
-        // super(name, [ctx.Eq(ctx.FreshConst(resType), phi)], [ctx.FreshConst(resType)], inputs, [precond]);
-        super(name, [Z3.mk_eq(ctx,Z3.mk_fresh_const(ctx,"",resType), phi)], [Z3.mk_fresh_const(ctx,"",resType)], inputs, [precond]);
+        super(name, [ctx.Eq(ctx.FreshConst(resType), phi)], [ctx.FreshConst(resType)], inputs, [precond]);
 
         this.precond = precond;
         this.func = phi;
@@ -259,19 +251,15 @@ class Func extends Spec {
         return true;
     }
 
-    translate<N extends string>(ctx: z3.Z3_context): Func {
+    translate<N extends string>(ctx: z3.Context<N>): Func {
         // const ins = this.inputs.map(i => i.translate(ctx));
         // return new Func(this.name, this.func.translate(ctx), this.precond.translate(ctx), ins);
-
-        const ins = this.inputs.map(i => Z3.translate(this.ctx,i,ctx));
-        return new Func(this.name, Z3.translate(this.ctx,this.func,ctx), Z3.translate(this.ctx,this.precond,ctx), ins);
-
-        // const ins = this.inputs.map(i => i);
-        // return new Func(this.name, this.func, this.precond, ins);
+        const ins = this.inputs.map(i => i);
+        return new Func(this.name, this.func, this.precond, ins);
     }
 
     // Cached property
-    get outType(): z3.Z3_sort {
+    get outType(): z3.Sort {
         return this.outTypes[0];
     }
 
@@ -279,8 +267,7 @@ class Func extends Spec {
     // get isCommutative(): boolean {
     async isCommutative(): Promise<boolean> {
         // If the operator inputs have different sorts, it cannot be commutative
-        // if (new Set(this.inputs.map(v => v.sort)).size > 1 || this.inputs.length > 3) {
-        if (new Set(this.inputs.map(v => Z3.get_sort(ctx,v))).size > 1 || this.inputs.length > 3) {
+        if (new Set(this.inputs.map(v => v.sort)).size > 1 || this.inputs.length > 3) {
             return false;
         }
 
@@ -291,29 +278,19 @@ class Func extends Spec {
         const precond = this.precond;
         const func = this.func;
         const ins = this.inputs.map(x => x);
-        // const subst = (f: z3.Expr, i: z3.Expr[]) => ctx.substitute(f, ...ins.map((x, j) => [x, i[j]] as [z3.Expr, z3.Expr]));
-        const subst = (f: z3.Z3_ast, i: z3.Z3_ast[]) => Z3.substitute(ctx,f, this.inputs, i);
+        const subst = (f: z3.Expr, i: z3.Expr[]) => ctx.substitute(f, ...ins.map((x, j) => [x, i[j]] as [z3.Expr, z3.Expr]));
 
         const fs = combine(permute(ins), 2).map(([a, b]) => {
-            // return ctx.And(...[
-            //     subst(precond, a) as z3.Bool, 
-            //     subst(precond, b) as z3.Bool, 
-            //     ctx.Not(ctx.Eq(subst(func, a), subst(func, b)))
-            // ]);
-            return Z3.mk_and(ctx,[
-                subst(precond, a) as z3.Z3_ast, 
-                subst(precond, b) as z3.Z3_ast, 
-                Z3.mk_not(ctx,Z3.mk_eq(ctx,subst(func, a), subst(func, b)))
+            return ctx.And(...[
+                subst(precond, a) as z3.Bool, 
+                subst(precond, b) as z3.Bool, 
+                ctx.Not(ctx.Eq(subst(func, a), subst(func, b)))
             ]);
         });
 
-        // const solver = new ctx.Solver();
-        // solver.add(ctx.Or(...fs));
-        const solver = Z3.mk_solver(ctx);
-        const fsOr = Z3.mk_or(ctx,fs);
-        // return await solver.check() === 'unsat';
-        Z3.solver_assert(ctx,solver,fsOr);
-        return await Z3.solver_check(ctx,solver) === -1;
+        const solver = new ctx.Solver();
+        solver.add(ctx.Or(...fs));
+        return await solver.check() === 'unsat';
     }
 }
 
@@ -467,32 +444,26 @@ class EnumBase<T, U> {
 // however, z3-built.js contains _Z3_mk_enumeration_sort in 11737
 
 // EnumSortEnum class
-class EnumSortEnum extends EnumBase<z3.Z3_func_decl, any> {
+class EnumSortEnum extends EnumBase {
     sort: any; // Type of sort depends on the library being used
 
-    constructor(name: string, items: any[], ctx: z3.Z3_context) {
+    constructor(name: string, items: any[], ctx: z3.Context) {
         // Assuming EnumSort and BitVecSort are defined elsewhere
-        // const [sort, cons] = ctx.EnumSort(name, items.map(i => i.toString()), ctx=ctx);
-        // const [sort, cons, testers] 
-        const {
-          rv: sort,
-          enum_consts: cons,
-          enum_testers: testers
-        } = Z3.mk_enumeration_sort(ctx,
-          Z3.mk_string_symbol(ctx,name),
-          items.map(i => i.toString()));
+        const [sort, cons] = ctx.EnumSort(name, items.map(i => i.toString()), ctx=ctx);
+        // const [sort, cons] = Z3.mk_enumeration_sort(ctx,name, items.map(i => i.toString()));
         super(items, cons);
         this.sort = sort;
     }
 
-    getFromModelVal(val: z3.Z3_func_decl): any {
-        return this.consToItem.get(val);
+    getFromModelVal(val: any): EnumItem {
+        return this.consToItem[val];
     }
 
-    addRangeConstr(solver: any, variable: z3.Z3_ast): void {
-        Z3.solver_assert(ctx,solver,
-          Z3.mk_le(ctx, variable, 
-            Z3.mk_int(ctx,this.cons.length-1, Z3.mk_int_sort(ctx))));
+    addRangeConstr(solver: any, var: any): void {
+        // Add range constraint, implementation depends on the solver library
+        // For example:
+        // solver.add(var <= this.length - 1);
+        // This will ensure the variable var is within the range of enum items
     }
 }
 
@@ -502,20 +473,20 @@ class EnumSortEnum extends EnumBase<z3.Z3_func_decl, any> {
 
 
   
-  // console.log('')
-  // console.log('### running the high-level API')
-  // // let { Context } = await window.z3Promise;
-  // let { Solver, Int } = Context('main');
-  // let solver = new Solver();
-  // let x = Int.const('x');
-  // solver.add(x.add(5).eq(9));
-  // console.log(await solver.check());
-  // console.log('x is', solver.model().get(x).toString());
+  console.log('')
+  console.log('### running the high-level API')
+  // let { Context } = await window.z3Promise;
+  let { Solver, Int } = Context('main');
+  let solver = new Solver();
+  let x = Int.const('x');
+  solver.add(x.add(5).eq(9));
+  console.log(await solver.check());
+  console.log('x is', solver.model().get(x).toString());
 
-  // console.log("Collect vars");
-  // console.log(Array.from(_collect_vars(x.add(5).eq(9))).map(x => x.toString()));
-  // const y = Int.const('y');
-  // console.log(Array.from(_collect_vars(x.add(y).eq(9))).map(x => x.toString()));
+  console.log("Collect vars");
+  console.log(Array.from(_collect_vars(x.add(5).eq(9))).map(x => x.toString()));
+  const y = Int.const('y');
+  console.log(Array.from(_collect_vars(x.add(y).eq(9))).map(x => x.toString()));
 
 })().catch(e => {
   console.error(e);
