@@ -444,28 +444,28 @@ class EnumBase<T, U> {
 // however, z3-built.js contains _Z3_mk_enumeration_sort in 11737
 
 // EnumSortEnum class
-class EnumSortEnum extends EnumBase {
-    sort: any; // Type of sort depends on the library being used
+// class EnumSortEnum extends EnumBase {
+//     sort: any; // Type of sort depends on the library being used
 
-    constructor(name: string, items: any[], ctx: z3.Context) {
-        // Assuming EnumSort and BitVecSort are defined elsewhere
-        const [sort, cons] = ctx.EnumSort(name, items.map(i => i.toString()), ctx=ctx);
-        // const [sort, cons] = Z3.mk_enumeration_sort(ctx,name, items.map(i => i.toString()));
-        super(items, cons);
-        this.sort = sort;
-    }
+//     constructor(name: string, items: any[], ctx: z3.Context) {
+//         // Assuming EnumSort and BitVecSort are defined elsewhere
+//         const [sort, cons] = ctx.EnumSort(name, items.map(i => i.toString()), ctx=ctx);
+//         // const [sort, cons] = Z3.mk_enumeration_sort(ctx,name, items.map(i => i.toString()));
+//         super(items, cons);
+//         this.sort = sort;
+//     }
 
-    getFromModelVal(val: any): EnumItem {
-        return this.consToItem[val];
-    }
+//     getFromModelVal(val: any): EnumItem {
+//         return this.consToItem[val];
+//     }
 
-    addRangeConstr(solver: any, var: any): void {
-        // Add range constraint, implementation depends on the solver library
-        // For example:
-        // solver.add(var <= this.length - 1);
-        // This will ensure the variable var is within the range of enum items
-    }
-}
+//     addRangeConstr(solver: any, var: any): void {
+//         // Add range constraint, implementation depends on the solver library
+//         // For example:
+//         // solver.add(var <= this.length - 1);
+//         // This will ensure the variable var is within the range of enum items
+//     }
+// }
 
 
 

@@ -7,7 +7,7 @@ import reportWebVitals from './reportWebVitals';
 
 
 import * as z3 from 'z3-solver';
-console.log("HI2");
+
 declare global {
   interface Window { z3Promise: ReturnType<typeof z3.init>; }
 }
@@ -31,21 +31,48 @@ window.z3Promise = z3.init();
   // Z3.del_context(ctx);
 
 
-  function _collect_vars<Name extends string = 'main'>(expr : z3.Z3_ast) 
+  function _collect_vars(expr : z3.Z3_ast) 
   : Set<z3.Z3_ast> {
+    console.log("Checking",expr, "(",Z3.ast_to_string(ctx,expr),")");
     let vars = new Set<z3.Z3_ast>();
     function collect(expr : z3.Z3_ast) {
-      if (expr.children().length === 0 && expr.decl().kind() === z3.Z3_decl_kind.Z3_OP_UNINTERPRETED) {
-        vars.add(expr);
-      } else {
-        for (let child of expr.children()) {
-          collect(child);
+    //   if (expr.children().length === 0 && expr.decl().kind() === z3.Z3_decl_kind.Z3_OP_UNINTERPRETED) {
+    //     vars.add(expr);
+    //   } else {
+    //     for (let child of expr.children()) {
+    //       collect(child);
+    //     }
+    //   }
+
+
+        if(!Z3.is_app(ctx,expr))
+            return;
+        const app = Z3.to_app(ctx,expr);
+        const child_count = Z3.get_app_num_args(ctx,app);
+        // console.log("Collecting",expr, "(",Z3.ast_to_string(ctx,expr),")","with",child_count,"children");
+        console.log("Collecting",expr, "with",child_count,"children");
+        if (child_count === 0 && 
+            Z3.get_decl_kind(ctx,Z3.get_app_decl(ctx,app)) === z3.Z3_decl_kind.Z3_OP_UNINTERPRETED) {
+            vars.add(expr);
+        }else {
+            for (let i = 0; i < child_count; i++) {
+                console.log("Collecting child",i,"of",child_count,"for",expr,":" ,Z3.get_app_arg(ctx,app,i));
+                const child = Z3.get_app_arg(ctx,app,i);
+                if (child===expr) {
+                    console.log("Skipping child",i,"of",child_count,"for",expr,":" ,Z3.get_app_arg(ctx,app,i));
+                    continue;
+                }
+                collect(Z3.get_app_arg(ctx,app,i));
+            }
         }
-      }
+
     }
     collect(expr);
     return vars;
   }
+
+
+
 
 
 // Name extends string
@@ -499,6 +526,25 @@ class EnumSortEnum extends EnumBase<z3.Z3_func_decl, any> {
 
 
 
+let x = Z3.mk_const(ctx,Z3.mk_string_symbol(ctx,"x"),Z3.mk_int_sort(ctx));
+let y = Z3.mk_const(ctx,Z3.mk_string_symbol(ctx,"y"),Z3.mk_int_sort(ctx));
+let z = Z3.mk_const(ctx,Z3.mk_string_symbol(ctx,"z"),Z3.mk_int_sort(ctx));
+// const x_plus_y = Z3.mk_add(ctx,[x,y]);
+// const z_plus_xy = Z3.mk_add(ctx,[z,x_plus_y]);
+// const z_plus_xy = Z3.mk_add(ctx,[z,x,y]);
+const z_plus_xy = Z3.mk_add(ctx,[z,x,Z3.mk_numeral(ctx,"5",Z3.mk_int_sort(ctx))]);
+// const a_plus_5 = Z3.mk_add(ctx,[x_plus_y,Z3.mk_int(ctx,5,Z3.mk_int_sort(ctx))]);
+
+console.log("Collect vars");
+console.log("plus: ",Array.from(_collect_vars(z_plus_xy)).map(x => Z3.ast_to_string(ctx,x)));
+console.log("x: ",Array.from(_collect_vars(x)).map(x => Z3.ast_to_string(ctx,x)));
+// y = Z3.mk_const(ctx,Z3.mk_string_symbol(ctx,"y"),Z3.mk_int_sort(ctx));
+console.log("y: ",Array.from(_collect_vars(y)).map(x => Z3.ast_to_string(ctx,x)));
+console.log("z: ",Array.from(_collect_vars(z)).map(x => Z3.ast_to_string(ctx,x)));
+// console.log(Array.from(_collect_vars(x_plus_y)).map(x => Z3.ast_to_string(ctx,x)));
+// console.log(Array.from(_collect_vars(a_plus_5)).map(x => Z3.ast_to_string(ctx,x)));
+// console.log(Array.from(_collect_vars(x)).map(x => Z3.ast_to_string(ctx,x)));
+// console.log(Array.from(_collect_vars(x)).map(x => x.toString()));
 
 
   
