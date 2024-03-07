@@ -1,5 +1,9 @@
 
 import * as z3 from 'z3-solver';
+// import Z3HighLevel from 'z3-solver/build/high-level/types';
+
+// import { Types } from 'z3-solver/build/high-level';
+
 console.log("HI2");
 declare global {
   interface Window { z3Promise: ReturnType<typeof z3.init>; }
@@ -8,7 +12,7 @@ window.z3Promise = z3.init();
 (async () => {
   // use the low-level API:
   // console.log('### running the low-level API')
-  let { Z3 } = await window.z3Promise;
+//   let { Z3 } = await window.z3Promise;
   // let config = Z3.mk_config();
   // let ctx = Z3.mk_context_rc(config);
   // Z3.del_config(config);
@@ -34,6 +38,33 @@ window.z3Promise = z3.init();
   - use ctx.Operation for operations like And, Or, etc.
   - check is a promise -> async function and await result
 
+
+
+
+References:
+
+./node_modules/z3-solver/build/high-level/high-level.js
+for how high-level uses low-level
+
+./node_modules/z3-solver/build/high-level/types.d.ts
+Type Interface for access
+
+node_modules/z3-solver/build/low-level/wrapper.__GENERATED__.d.ts
+node_modules/z3-solver/build/low-level/types.__GENERATED__.d.ts
+low-level Z3 functions
+
+
+
+Custom Extension to scopes:
+(automatically applied post-install via patch-package)
+Context: 
+high-level-js 2119
+    _toAst,
+    _toSort,
+types.d.ts 370
+    _toAst(value: any): any;
+    _toSort(value: any): Sort;
+
   */
 
 
@@ -54,7 +85,10 @@ window.z3Promise = z3.init();
   }
 
 type Name = "main";
-let { Context } = await window.z3Promise;
+// let { Context } = await window.z3Promise;
+let Z3M = await window.z3Promise;
+let Context = Z3M.Context;
+const Z3 = Z3M.Z3;
 // let { Solver, Int } = Context('main');
 const ctx = Context("main");
 
@@ -171,7 +205,7 @@ class Spec{
         return await solver.check() === 'unsat';
     }
 
-    instantiate(outs: z3.Expr[], ins: z3.Expr[]): [z3.Expr[], z3.Expr[]] {
+    instantiate(outs: z3.Expr[], ins: z3.Expr[]): [z3.Bool[], z3.Bool[]] {
         const selfOuts = this.outputs;
         const selfIns = this.inputs;
         if (outs.length !== selfOuts.length || ins.length !== selfIns.length) {
@@ -183,9 +217,9 @@ class Spec{
         const selfVars = [...selfOuts, ...selfIns];
         const vars = [...outs, ...ins];
         const phis = this.phis.map(phi => ctx.substitute(phi, 
-            ...selfVars.map((x, i) => [x, vars[i]] as [z3.Expr, z3.Expr])));
+            ...selfVars.map((x, i) => [x, vars[i]] as [z3.Expr, z3.Expr])) as z3.Bool);
         const pres = this.preconds.map(p => ctx.substitute(p, 
-            ...selfIns.map((x, i) => [x, ins[i]] as [z3.Expr, z3.Expr])));
+            ...selfIns.map((x, i) => [x, ins[i]] as [z3.Expr, z3.Expr])) as z3.Bool);
         return [pres, phis];
     }
 }
@@ -287,7 +321,7 @@ class Func extends Spec {
     }
 }
 
-type Op = any;
+type Op = Func;
 type Insns = [boolean, number][];
 type Outputs = [boolean, number][];
 type OutputMap = { [key: number]: string[] };
@@ -433,32 +467,855 @@ class EnumBase<T, U> {
     }
 }
 
+
 // Note: EnumSort does not exists in types.d.ts or highlevel
 // however, z3-built.js contains _Z3_mk_enumeration_sort in 11737
 
+interface Showable {
+    toString(): string;
+}
+
 // EnumSortEnum class
-// class EnumSortEnum extends EnumBase {
-//     sort: any; // Type of sort depends on the library being used
+// class EnumSortEnum<T extends Showable> extends EnumBase<z3.Z3_func_decl, T> {
+//     sort: z3.Z3_sort; // Type of sort depends on the library being used
+class EnumSortEnum<T extends Showable> extends EnumBase<[z3.FuncDecl,z3.FuncDecl], T> {
+    sort: z3.Sort; // Type of sort depends on the library being used
 
-//     constructor(name: string, items: any[], ctx: z3.Context) {
-//         // Assuming EnumSort and BitVecSort are defined elsewhere
-//         const [sort, cons] = ctx.EnumSort(name, items.map(i => i.toString()), ctx=ctx);
-//         // const [sort, cons] = Z3.mk_enumeration_sort(ctx,name, items.map(i => i.toString()));
-//         super(items, cons);
-//         this.sort = sort;
+    constructor(name: string, items: T[], ctx: z3.Context) {
+        // Assuming EnumSort and BitVecSort are defined elsewhere
+        const {
+          rv: sort,
+          enum_consts: cons,
+          enum_testers: testers
+        } = Z3.mk_enumeration_sort(ctx.ptr,
+          Z3.mk_string_symbol(ctx.ptr,name),
+          items.map(i => Z3.mk_string_symbol(ctx.ptr, i.toString()))
+        );
+        // it would be better to create FuncDeclImpl, and SortImpl instances
+        // but the classes are not visible to the outside (internally created in high-level->createApi->createContext)
+        // increment reference count
+        // Z3.inc_ref(ctx.ptr, sort);
+        // for (let i = 0; i < items.length; i++) {
+        //     Z3.inc_ref(ctx.ptr, cons[i]);
+        //     Z3.inc_ref(ctx.ptr, testers[i]);
+        // }
+        const consFunc = cons.map((c, i) => ctx._toAst(c) as z3.FuncDecl);
+        const testerFunc = testers.map((c, i) => ctx._toAst(c) as z3.FuncDecl);
+        const combined = consFunc.map((c, i) => [c, testerFunc[i]] as [z3.FuncDecl,z3.FuncDecl]);
+        super(items, combined);
+        this.sort = ctx._toSort(sort);
+    }
+
+    getFromModelVal(val: [z3.FuncDecl,z3.FuncDecl]): T {
+        if (!this.consToItem.has(val)) {
+            throw new Error('Invalid enum value');
+        }
+        return this.consToItem.get(val) as T;
+    }
+
+    addRangeConstr(solver: z3.Solver, variable: z3.Arith): void {
+        return;
+    }
+}
+
+function _bv_sort(n:number, ctx: z3.Context): z3.BitVecSort {
+    const bits = Math.max(1, Math.floor(Math.log2(n)) + 1);
+    return ctx.BitVec.sort(bits);
+}
+
+class BitVecEnum<T> extends EnumBase<number, T> {
+    sort: z3.Sort; // Type of sort depends on the library being used
+
+    constructor(name: string, items: T[], ctx: z3.Context) {
+        // Assuming EnumSort and BitVecSort are defined elsewhere
+        const cons = items.map((_, i) => i);
+        super(items, cons);
+        this.sort = _bv_sort(items.length, ctx);
+    }
+
+    getFromModelVal(val: number): T {
+        if (!this.consToItem.has(val)) {
+            throw new Error('Invalid enum value');
+        }
+        return this.consToItem.get(val) as T;
+    }
+
+    addRangeConstr(solver: z3.Solver, variable: z3.Arith): void {
+        solver.add(variable.le(this.cons.length - 1));
+    }
+}
+
+function timer(): () => number {
+    const start = Date.now();
+    return () => Date.now() - start;
+}
+
+function _eval_model<T>(solver: z3.Solver, vars: z3.Expr[]): z3.Expr[] {
+    const model = solver.model();
+    return vars.map(v => model.eval(v, true));
+}
+
+function zip<T,U>(a: T[], b: U[]): [T,U][] {
+    return a.map((e, i) => [e, b[i]]);
+}
+
+class SpecWithSolver {
+    ctx: z3.Context;
+    spec: Spec;
+    ops: Func[];
+    opEnum: EnumSortEnum<Func>;
+    tyEnum: EnumSortEnum<z3.Sort>;
+    verif: z3.Solver;
+    eval: z3.Solver;
+    inputs: z3.Expr[];
+    outputs: z3.Expr[];
+
+    constructor(spec: Spec, ops: Func[], ctx: z3.Context) {
+        this.ctx = ctx;
+        this.spec = spec.translate(ctx);
+        this.ops = ops.map(op => op.translate(ctx));
+
+        // Prepare operator enum sort
+        this.opEnum = new EnumSortEnum('Operators', this.ops, ctx);
+
+        // Create map of types to their id
+        const types = new Set<z3.Sort>();
+        for (const op of this.ops) {
+            // types.add(...op.outTypes, ...op.inTypes);
+            // types.add(...op.inTypes);
+            // types.add(...op.outTypes);
+            op.inTypes.forEach(ty => types.add(ty));
+            op.outTypes.forEach(ty => types.add(ty));
+        }
+        this.tyEnum = new EnumSortEnum('Types', Array.from(types), ctx);
+
+        // Prepare verification solver
+        this.verif = new ctx.Solver();
+        this.eval = new ctx.Solver();
+        this.inputs = this.spec.inputs;
+        this.outputs = this.spec.outputs;
+
+        this.verif.add(ctx.Or(...this.spec.preconds.map((pre, i) => ctx.And(pre, ctx.Not(this.spec.phis[i])))));
+        this.spec.phis.forEach(phi => this.eval.add(phi));
+    }
+
+    async evalSpec(inputVals: z3.Expr[]): Promise<z3.Expr[]> {
+        const s = this.eval;
+        s.push();
+        for (let i = 0; i < this.inputs.length; i++) {
+            // s.add(this.inputs[i] === inputVals[i]);
+            s.add(this.inputs[i].eq(inputVals[i]));
+        }
+        const res = await s.check();
+        if (res !== 'sat') {
+            throw new Error('Spec evaluation failed: Unsatisfiable');
+        }
+        const evaluated = _eval_model(s, this.outputs);
+        s.pop();
+        return evaluated;
+    }
+
+    async sampleN(n: number): Promise<z3.Expr[][]> {
+        const result : z3.Expr[][] = [];
+        const s = this.eval;
+        s.push();
+        for (let i = 0; i < n; i++) {
+            if (await s.check() === 'unsat') {
+                if (result.length === 0) {
+                    throw new Error('must have sampled the spec at least once');
+                }
+                break;
+            }
+            const model = s.model();
+            const ins = _eval_model(s, this.inputs);
+            result.push(ins);
+            s.add(ctx.Or(...ins.map((v, j) => v.neq(ins[j]))));
+        }
+        s.pop();
+        return result;
+    }
+
+    async synth_n(
+        nInsns: number,
+        debug: number = 0,
+        maxConst: number | null = null,
+        initSamples: z3.Expr[][] = [],
+        outputPrefix: string | null = null,
+        theory: string | null = null,
+        resetSolver: boolean = true,
+        optNoDeadCode: boolean = true,
+        optNoCSE: boolean = true,
+        optConst: boolean = true,
+        optCommutative: boolean = true,
+        optInsnOrder: boolean = true
+    ): Promise<[Prg | null, any[]]> {
+        // Define inner functions and variables
+
+        // Define debug function
+        function d(level: number, ...args: any[]) {
+            if (debug >= level) {
+                console.log(...args);
+            }
+        }
+
+        // Define other inner functions as necessary
+
+        // Implement the main logic of the synth_n method
+        let ops = this.ops;
+        let ctx = this.ctx;
+        let spec = this.spec;
+        let inTys = spec.inTypes;
+        let outTys = spec.outTypes;
+        let nInputs = inTys.length;
+        let nOutputs = outTys.length;
+        let outInsn = nInputs + nInsns;
+        let length = outInsn + 1;
+
+        let maxArity = Math.max(...ops.map(op => op.arity));
+        let arities = [...Array(nInputs).fill(0), ...Array(nInsns).fill(maxArity), nOutputs];
+
+        // Define variable getters and other helper functions
+        const tySort = this.tyEnum.sort;
+        const opSort = this.opEnum.sort;
+        const lnSort = _bv_sort(length, ctx);
+        const blSort = ctx.Bool.sort();
+
+        const evalIns = this.inputs;
+        const evalOuts = this.outputs;
+        const verif = this.verif;
+
+        const self = this;
+
+        // memoized
+        function getVar(ty: z3.Sort, name: string): z3.Expr {
+            if(ctx !== ty.ctx) {
+                throw new Error('Context mismatch');
+            }
+            return ctx.Const(name, ty);
+        }
+
+        // memoized
+        function tyName(ty: z3.Sort): string {
+            return ty.toString().replace(/[ ,()\.]/g, '_');
+        }
+
+        function varInsnOp(insn: string): z3.Expr {
+            return getVar(opSort, `insn_${insn}_op`);
+        }
+
+        function* varInsnOpndsIsConst(insn: number): Generator<z3.Bool, void, unknown> {
+            for (let opnd = 0; opnd < arities[insn]; opnd++) {
+                yield getVar(blSort, `insn_${insn}_opnd_${opnd}_is_const`) as z3.Bool;
+            }
+        }
+
+        function* varInsnOpOpndsConstVal(insn: number, opndTys: z3.Sort[]): Generator<z3.Expr, void, unknown> {
+            for (let opnd = 0; opnd < opndTys.length; opnd++) {
+                yield getVar(opndTys[opnd], `insn_${insn}_opnd_${opnd}_${tyName(opndTys[opnd])}_const_val`);
+            }
+        }
+
+        function* varInsnOpnds(insn: number, arities: number[]): Generator<z3.BitVec, void, unknown> {
+            for (let opnd = 0; opnd < arities[insn]; opnd++) {
+                yield getVar(lnSort, `insn_${insn}_opnd_${opnd}`) as z3.BitVec;
+            }
+        }
+
+        function* varInsnOpndsVal(insn: number, tys: z3.Sort[], instance: string): Generator<z3.Expr, void, unknown> {
+            for (let opnd = 0; opnd < tys.length; opnd++) {
+                yield getVar(tys[opnd], `insn_${insn}_opnd_${opnd}_${tyName(tys[opnd])}_${instance}`);
+            }
+        }
+
+        function* varOutsVal(instance: string): Generator<z3.Expr, void, unknown> {
+            for (let opnd of varInsnOpndsVal(outInsn, outTys, instance)) {
+                yield opnd;
+            }
+        }
+
+        // function* varInsnOpndsType(insn: number, arities: number[]): Generator<z3.Expr, void, unknown> {
+        //     for (let opnd = 0; opnd < arities[insn]; opnd++) {
+        //         yield getVar(tySort, `insn_${insn}_opnd_type_${opnd}`);
+        //     }
+        // }
+        function varInsnOpndsType(insn: number, arities: number[]): z3.Expr[] {
+            const res = [];
+            for (let opnd = 0; opnd < arities[insn]; opnd++) {
+                // yield getVar(tySort, `insn_${insn}_opnd_type_${opnd}`);
+                res.push(getVar(tySort, `insn_${insn}_opnd_type_${opnd}`));
+            }
+            return res;
+        }
+
+        function varInsnRes(insn: number, ty: any, instance: string): z3.Expr {
+            return getVar(ty, `insn_${insn}_res_${tyName(ty)}_${instance}`);
+        }
+
+        function varInsnResType(insn: number): z3.Expr {
+            return getVar(tySort, `insn_${insn}_res_type`);
+        }
+
+        function varInputRes(insn: number, instance: string): z3.Expr {
+            return varInsnRes(insn, inTys[insn], instance);
+        }
+
+        function isOpInsn(insn: number): boolean {
+            return insn >= nInputs && insn < length - 1;
+        }
+
+        function addConstrWfp(solver: z3.Solver): void {
+            // acyclic: line numbers of uses are lower than line number of definition
+            // i.e.: we can only use results of preceding instructions
+            for (let insn = 0; insn < length; insn++) {
+                for (let v of varInsnOpnds(insn, arities)) {
+                    solver.add(v.ule(insn - 1));
+                }
+            }
+
+            // pin operands of an instruction that are not used (because of arity)
+            // to the last input of that instruction
+            for (let insn = nInputs; insn < length - 1; insn++) {
+                let opnds = [...varInsnOpnds(insn, arities)];
+                for (let [op, [opCtor, opTest]] of self.opEnum.itemToCons.entries()) {
+                    let unused = opnds.slice(op.arity);
+                    for (let opnd of unused) {
+                        // solver.add(Implies(varInsnOp(insn) == opId, opnd == opnds[op.arity - 1]));
+                        // solver.add(ctx.Implies(varInsnOp(insn.toString()).eq(opId), opnd.eq(opnds[op.arity - 1])));
+                        solver.add(ctx.Implies(opTest.call(varInsnOp(insn.toString())).eq(true), opnd.eq(opnds[op.arity - 1])));
+                    }
+                }
+            }
+
+            // Add a constraint for the maximum amount of constants if specified.
+            // The output instruction is exempt because we need to be able
+            // to synthesize constant outputs correctly.
+            let maxConstRan = [...Array(length - nInputs - 1).keys()].map(i => i + nInputs);
+            if (maxConst !== null && maxConstRan.length > 0) {
+                // solver.add(AtMost([...maxConstRan.flatMap(insn =>
+                //     [...varInsnOpndsIsConst(insn)].map(v => v)), maxConst]));
+                // solver.add(ctx.AtMost([...maxConstRan.flatMap(insn =>
+                //     [...varInsnOpndsIsConst(insn)].map(v => v)), maxConst]));
+
+                // context has no AtMost
+                // we encode it as a sum of booleans <= maxConst
+                const bools = maxConstRan.flatMap(insn => [...varInsnOpndsIsConst(insn)]);
+                const ints = bools.map(b => ctx.If(b, 1, 0));
+                solver.add(ctx.Sum(ctx.Int.val(0), ...ints).le(ctx.Int.val(maxConst)));
+            }
+
+            // if we have at most one type, we don't need type constraints
+            if (self.tyEnum.length <= 1) {
+                return;
+            }
+
+            // for all instructions that get an op
+            // add constraints that set the type of an instruction's operand
+            // and the result type of an instruction
+            let types = self.tyEnum.itemToCons;
+            for (let insn = nInputs; insn < length - 1; insn++) {
+                self.opEnum.addRangeConstr(solver, varInsnOp(insn.toString()) as z3.Arith);
+                for (let [op, [opCtor, opTest]] of self.opEnum.itemToCons.entries()) {
+                    // add constraints that set the result type of each instruction
+                    // solver.add(Implies(varInsnOp(insn) == opId,
+                    //     varInsnResType(insn) == types[op.outType]));
+                    solver.add(ctx.Implies(opTest.call(varInsnOp(insn.toString())).eq(true),
+                        types.get(op.outType)![1].call(varInsnResType(insn)).eq(true)));
+                        // varInsnResType(insn).eq(types.get(op.outType))));
+
+                    // add constraints that set the type of each operand
+                    // for (let [opTy, v] of zip(op.inTypes, varInsnOpndsType(insn, arities))) {
+                    //     solver.add(Implies(varInsnOp(insn) == opId, v == types[opTy]));
+                    // }
+                    for (let [opTy, v] of op.inTypes.map((opTy, i) => [opTy, varInsnOpndsType(insn, arities)[i]] as [z3.Sort, z3.Expr])) {
+                        solver.add(ctx.Implies(opTest.call(varInsnOp(insn.toString())).eq(true), 
+                        // v.eq(types.get(opTy)![1])
+                        types.get(opTy)![1].call(v).eq(true)
+                        ));
+                    }
+
+                }
+            }
+
+            // define types of inputs
+            for (let [inp, ty] of inTys.map((ty, i) => [i, ty] as [number, z3.Sort])) {
+                // solver.add(varInsnResType(inp) == types[ty]);
+                solver.add(types.get(ty)![1].call(varInsnResType(inp)).eq(true));
+            }
+
+            // define types of outputs
+            // for (let [v, ty] of zip(varInsnOpndsType(outInsn, arities), outTys)) {
+            //     solver.add(v == types[ty]);
+            // }
+            for (let [v, ty] of zip(varInsnOpndsType(outInsn, arities), outTys)) {
+                // varInsnOpndsType(outInsn, arities).map((v, i) => [v, outTys[i]] as [z3.Expr, z3.Sort])) {
+                solver.add(types.get(ty)![1].call(v).eq(true));
+            }
+
+            // constrain types of outputs
+            for (let insn = nInputs; insn < length; insn++) {
+                for (let other = 0; other < insn; other++) {
+                    // for (let [opnd, c, ty] of zip(varInsnOpnds(insn, arities),
+                    //     varInsnOpndsIsConst(insn, arities), varInsnOpndsType(insn, arities))) {
+                    //     solver.add(Implies(Not(c), Implies(opnd == other,
+                    //         ty == varInsnResType(other))));
+                    // }
+                    for (let [[opnd, c], ty] of 
+                        zip(
+                            zip([...varInsnOpnds(insn, arities)], [...varInsnOpndsIsConst(insn)]), 
+                            varInsnOpndsType(insn, arities))) {
+                        solver.add(ctx.Implies(ctx.Not(c),
+                            ctx.Implies(opnd.eq(other),
+                                types.get(ty.sort)![1].call(ty).eq(true))));
+                    }
+                }
+                self.tyEnum.addRangeConstr(solver, varInsnResType(insn) as z3.Arith);
+            }
+        }
+
+        function addConstrOpt(solver:z3.Solver) {
+            // TODO: skiped for now (line 568-612)
+        }
+
+function iterOpndInfo(insn: number, tys: z3.Sort[], instance: string): 
+[
+    z3.Sort,
+    z3.BitVec,
+    z3.Expr,
+    z3.Bool,
+    z3.Expr
+][] {
+    const opnds = [...varInsnOpnds(insn, arities)];
+    const opndsVal = [...varInsnOpndsVal(insn, tys, instance)];
+    const isConsts = [...varInsnOpndsIsConst(insn)];
+    const opOpndsConstVal = [...varInsnOpOpndsConstVal(insn, tys)];
+
+    return tys.map((ty, i) => 
+        [ty, opnds[i], opndsVal[i], isConsts[i], opOpndsConstVal[i]] as [z3.Sort, z3.BitVec, z3.Expr, z3.Bool, z3.Expr]);
+}
+
+function addConstrConn(solver: any, insn: number, tys: any[], instance: string): void {
+    for (let [ty, l, v, c, cv] of iterOpndInfo(insn, tys, instance)) {
+        // if the operand is a constant, its value is the constant value
+        // solver.add(Implies(c, v == cv));
+        solver.add(c.implies(v.eq(cv)));
+        // else, for each instruction preceding it ...
+        for (let other = 0; other < insn; other++) {
+            let r = varInsnRes(other, ty, instance);
+            // ... the operand is equal to the result of the instruction
+            // solver.add(Implies(Not(c), Implies(l == other, v == r)));
+            solver.add(c.not().implies(l.eq(other)).implies(v.eq(r)));
+        }
+    }
+}
+
+function addConstrInstance(solver: z3.Solver, instance: string): void {
+    // for all instructions that get an op
+    for (let insn = nInputs; insn < length - 1; insn++) {
+        // add constraints to select the proper operation
+        let opVar = varInsnOp(insn.toString());
+        // for (let [op, opId] of Object.entries(self.opEnum.itemToCons)) {
+        for (let [op, [opCtor, opTest]] of self.opEnum.itemToCons.entries()) {
+            let res = varInsnRes(insn, op.outType, instance);
+            let opnds = [...varInsnOpndsVal(insn, op.inTypes, instance)];
+            let [[precond], [phi]] = op.instantiate([res], opnds);
+            // solver.add(Implies(opVar == opId, And([precond, phi])));
+            solver.add(ctx.Implies(opTest.call(opVar).eq(true), ctx.And(...[precond, phi])));
+        }
+        // connect values of operands to values of corresponding results
+        for (let op of ops) {
+            addConstrConn(solver, insn, op.inTypes, instance);
+        }
+    }
+    // add connection constraints for output instruction
+    addConstrConn(solver, outInsn, outTys, instance);
+}
+
+function addConstrIoSample(solver: any, instance: string, inVals: any[], outVals: any[]): void {
+    // add input value constraints
+    // assert(inVals.length == nInputs && outVals.length == nOutputs);
+    if (inVals.length !== nInputs || outVals.length !== nOutputs) {
+        throw new Error('Invalid input values');
+    }
+    for (let inp = 0; inp < inVals.length; inp++) {
+        // assert(inVals[inp] !== null);
+        if (inVals[inp] === null) {
+            throw new Error('Invalid input value');
+        }
+        let res = varInputRes(inp, instance);
+        solver.add(res == inVals[inp]);
+    }
+    for (let [out, val] of zip([...varOutsVal(instance)], outVals)) {
+        // assert(val !== null);
+        if (val === null) {
+            throw new Error('Invalid output value');
+        }
+        solver.add(out == val);
+    }
+}
+
+function addConstrIoSpec(solver: any, instance: string, inVals: any[]): void {
+    // add input value constraints
+    // assert(inVals.length == nInputs);
+    // assert(inVals.every(val => val !== null));
+    if (inVals.length !== nInputs || inVals.some(val => val === null)) {
+        throw new Error('Invalid input values');
+    }
+    for (let inp = 0; inp < inVals.length; inp++) {
+        solver.add(inVals[inp] == varInputRes(inp, instance));
+    }
+    let outs = [...varOutsVal(instance)];
+    let [preconds, phis] = spec.instantiate(outs, inVals);
+    for (let [pre, phi] of zip(preconds, phis)) {
+        // solver.add(Implies(pre, phi));
+        solver.add(pre.implies(phi));
+    }
+}
+
+function addConstrSolForVerif(model: z3.Model): void {
+    for (let insn = 0; insn < length; insn++) {
+        let tys = null;
+        if (isOpInsn(insn)) {
+            let v = varInsnOp(insn.toString());
+            // verif.add(model[v] == v);
+            verif.add(model.eval(v).eq(v));
+            let val = model.eval(v, true);
+            // TODO: reassociate backward the split between enum ctor and tester
+            // see other uses of getFromModelVal
+            let op = self.opEnum.getFromModelVal(val);
+            tys = op.inTypes;
+        } else {
+            tys = outTys;
+        }
+
+        // set connection values
+        for (let [_, opnd, v, c, cv] of iterOpndInfo(insn, tys, 'verif')) {
+            // let isConst = isTrue(model[c]) ?? false;
+            let isConst = model.eval(c).eq(true);
+            // verif.add(isConst == c);
+            verif.add(isConst.eq(c));
+            if (isConst) {
+                // verif.add(model[cv] == v);
+                verif.add(model.eval(cv).eq(v));
+            } else {
+                // verif.add(model[opnd] == opnd);
+                verif.add(model.eval(opnd).eq(opnd));
+            }
+        }
+    }
+}
+
+function addConstrSpecVerif(): void {
+    let verifOuts = [...varOutsVal('verif')];
+    // assert(verifOuts.length == evalOuts.length);
+    // assert(verifOuts.length == spec.preconds.length);
+    if (verifOuts.length !== evalOuts.length || verifOuts.length !== spec.preconds.length) {
+        throw new Error('Invalid output values');
+    }
+    for (let inp = 0; inp < evalIns.length; inp++) {
+        // verif.add(varInputRes(inp, 'verif') == evalIns[inp]);
+        verif.add(varInputRes(inp, 'verif').eq(evalIns[inp]));
+    }
+    for (let [v, e] of zip(verifOuts, evalOuts)) {
+        // verif.add(v == e);
+        verif.add(v.eq(e));
+    }
+}
+
+// TODO: test
+function asLong(expr: z3.Expr): number {
+    const sexpr = expr.sexpr();
+    const num= parseInt(sexpr.replace("(",'').replace(")",""));
+    if (isNaN(num)) {
+        throw new Error('Invalid number: '+sexpr+' from '+expr);
+    }
+    return num;
+}
+
+// TODO: test
+function asBool(expr: z3.Expr): boolean {
+    const sexpr = expr.sexpr();
+    const b = sexpr.includes('true');
+    return b;
+}
+
+function createPrg(model: z3.Model): Prg {
+    function* prepOpnds(insn: number, tys: z3.Sort[]): Generator<[boolean,number], void, unknown> {
+        for (let [_, opnd, v, c, cv] of iterOpndInfo(insn, tys, 'verif')) {
+            // let isConst = isTrue(model[c]) ?? false;
+            let isConst = model.eval(c).eq(true);
+            // yield (isConst, isConst ? model[cv] : model[opnd].asLong());
+            model.eval(cv).sexpr()
+            yield [asBool(isConst), asLong(isConst ? model.eval(cv) : model.eval(opnd))] as [boolean,number];
+        }
+    }
+
+    let insns : [Func,Insns][] = [];
+    for (let insn = nInputs; insn < length - 1; insn++) {
+        let val = model.eval(varInsnOp(insn.toString()), true);
+        // TODO: reassociate backward the split between enum ctor and tester
+        // see other uses of getFromModelVal
+        let op = self.opEnum.getFromModelVal(val);
+        let opnds = [...prepOpnds(insn, op.inTypes)];
+        insns.push([op, opnds] as [Func,Insns]);
+    }
+    let outputs = [...prepOpnds(outInsn, outTys)];
+    let outputNames = spec.outputs.map(v => String(v));
+    let inputNames = spec.inputs.map(v => String(v));
+    return new Prg(outputNames, inputNames, insns, outputs);
+}
+
+function writeSmt2(solver: z3.Solver, ...args: any[]): void {
+    if (outputPrefix !== null) {
+        let filename = `${outputPrefix}_${args.join("_")}.smt2`;
+        // fs.writeFileSync(filename, solver.toSmt2());
+        console.log("TODO SMT2");
+    }
+}
+
+// function writeSmt2(solver: any, ...args: any[]): void {
+//     if (!(solver instanceof z3.Solver)) {
+//         let s = new Solver(ctx);
+//         s.add(solver);
+//         solver = s;
 //     }
-
-//     getFromModelVal(val: any): EnumItem {
-//         return this.consToItem[val];
-//     }
-
-//     addRangeConstr(solver: any, var: any): void {
-//         // Add range constraint, implementation depends on the solver library
-//         // For example:
-//         // solver.add(var <= this.length - 1);
-//         // This will ensure the variable var is within the range of enum items
+//     if (outputPrefix !== null) {
+//         let filename = `${outputPrefix}_${args.join("_")}.smt2`;
+//         fs.writeFileSync(filename, solver.toSmt2());
 //     }
 // }
+
+function withTimer<T>(f: (elapsed: () => number) => T): [T, number] {
+    let t = timer();
+    let res = f(t);
+    return [res, t()];
+}
+
+
+// setup the synthesis solver
+let synthSolver: z3.Solver;
+if (theory) {
+    // synthSolver = SolverFor(theory, { ctx: ctx });
+    synthSolver = new ctx.Solver(theory);
+} else {
+    // synthSolver = new Tactic('psmt', { ctx: ctx }).solver();
+    // synthSolver = new ctx.Tactic('psmt').
+    synthSolver = new ctx.Solver();
+}
+// let synth = resetSolver ? new Goal({ ctx: ctx }) : synthSolver;
+let synth = synthSolver;
+addConstrWfp(synth);
+addConstrOpt(synth);
+
+let stats: any[] = [];
+let samples = initSamples.length > 0 ? initSamples : await this.sampleN(1);
+// assert(samples.length > 0, 'need at least 1 initial sample');
+if (samples.length <= 0) {
+    throw new Error('need at least 1 initial sample');
+}
+let useOutputSamples = await spec.isDeterministic() && spec.isTotal;
+d(3, 'use output samples:', useOutputSamples);
+
+let i = 0;
+while (true) {
+    let stat: any = {};
+    stats.push(stat);
+    let oldI = i;
+
+    for (let sample of samples) {
+        let sampleStr = String(sample);
+        let sampleOut = sampleStr.length < 50 ? sampleStr : sampleStr.slice(0, 50) + '...';
+        d(1, 'sample', i, sampleOut);
+        addConstrInstance(synth, i.toString());
+        if (useOutputSamples) {
+            let outVals = await this.evalSpec(sample);
+            addConstrIoSample(synth, i.toString(), sample, outVals);
+        } else {
+            addConstrIoSpec(synth, i.toString(), sample);
+        }
+        i++;
+    }
+
+    let samplesStr = i - oldI > 1 ? `${i - oldI}` : `${oldI}`;
+    d(5, 'synth', samplesStr, synth);
+    writeSmt2(synth, 'synth', nInsns, i);
+    if (resetSolver) {
+        synthSolver.reset();
+        // synthSolver.add(synth);
+        for (let c of synth.assertions()) {
+            synthSolver.add(c);
+        }
+    }
+    let res: z3.CheckSatResult;
+    let synthTime: number | undefined;
+    withTimer(async (elapsed) => {
+        res = await synthSolver.check();
+        synthTime = elapsed();
+        // d(3, synthSolver.statistics());
+        // d(2, `synth time: ${synthTime / 1e9:.3f}`);
+        const time_str = (synthTime / 1e9).toFixed(3);
+        d(2, `synth time: ${time_str}`);
+        stat['synth'] = synthTime;
+    });
+
+    if (res! == "sat") {
+        // if sat, we found location variables
+        let m = synthSolver.model();
+        let prg = createPrg(m);
+        stat['prg'] = String(prg).replace(/\n/g, '; ');
+
+        d(4, 'model: ', m);
+        d(2, 'program:', stat['prg']);
+
+        // push a new verification solver state
+        verif.push();
+        // Add constraints that represent the instructions of
+        // the synthesized program
+        addConstrInstance(verif, 'verif');
+        // Add constraints that relate the specification to
+        // the inputs and outputs of the synthesized program
+        addConstrSpecVerif();
+        // add constraints that set the location variables
+        // in the verification constraint
+        addConstrSolForVerif(m);
+
+        d(5, 'verif', samplesStr, verif);
+        writeSmt2(verif, 'verif', nInsns, samplesStr);
+        let verifTime: number;
+        withTimer(async (elapsed) => {
+            res = await verif.check();
+            verifTime = elapsed();
+        });
+        stat['verif'] = verifTime!;
+        d(2, `verif time ${(verifTime!/1e9).toFixed(3)}`);
+
+        if (res == "sat") {
+            // there is a counterexample, reiterate
+            samples = [_eval_model(this.verif, this.inputs)];
+            d(4, 'verification model', verif.model());
+            d(4, 'verif sample', samples[0]);
+            verif.pop();
+        } else {
+            verif.pop();
+            // we found no counterexample, the program is therefore correct
+            d(1, 'no counter example found');
+            return [prg, stats];
+        }
+    } else {
+        // assert(res == unsat);
+        if (res! !== "unsat") {
+            throw new Error('Synthesis failed');
+        }
+        d(1, `synthesis failed for size ${nInsns}`);
+        return [null, stats];
+    }
+}
+
+
+
+
+        // return [null, []];
+
+
+
+
+
+
+
+        // // Set up the synthesis solver
+        // let synthSolver;
+        // if (theory) {
+        //     synthSolver = new SolverFor(theory, ctx);
+        // } else {
+        //     synthSolver = new Tactic('psmt', ctx).solver();
+        // }
+
+        // let synth = new Goal(ctx);
+        // if (resetSolver) {
+        //     synthSolver.add(synth);
+        // }
+
+        // // Add constraints for the synthesis problem
+        // addConstrWfp(synth);
+        // addConstrOpt(synth);
+
+        // let stats = [];
+        // let samples = initSamples.length > 0 ? initSamples : this.sampleN(1);
+
+        // let i = 0;
+        // while (true) {
+        //     let stat: any = {};
+        //     stats.push(stat);
+        //     let oldI = i;
+
+        //     for (let sample of samples) {
+        //         d(1, `sample ${i}`, sample);
+        //         addConstrInstance(synth, i);
+        //         if (useOutputSamples) {
+        //             let outVals = this.evalSpec(sample);
+        //             addConstrIoSample(synth, i, sample, outVals);
+        //         } else {
+        //             addConstrIoSpec(synth, i, sample);
+        //         }
+        //         i++;
+        //     }
+
+        //     let samplesStr = i - oldI > 1 ? `${i - oldI}` : oldI.toString();
+        //     d(5, `synth ${samplesStr}`, synth);
+        //     writeSmt2(synth, 'synth', nInsns, i);
+
+        //     let res;
+        //     let synthTime;
+        //     withTimer(() => {
+        //         res = synthSolver.check();
+        //         synthTime = elapsed();
+        //         d(3, synthSolver.statistics());
+        //         d(2, `synth time: ${synthTime / 1e9:.3f}`);
+        //         stat['synth'] = synthTime;
+        //     });
+
+        //     if (res == sat) {
+        //         let m = synthSolver.model();
+        //         let prg = createPrg(m);
+        //         stat['prg'] = prg.toString().replace('\n', '; ');
+
+        //         d(4, 'model: ', m);
+        //         d(2, 'program:', stat['prg']);
+
+        //         verif.push();
+        //         addConstrInstance(verif, 'verif');
+        //         addConstrSpecVerif();
+        //         addConstrSolForVerif(m);
+
+        //         d(5, `verif ${samplesStr}`, verif);
+        //         writeSmt2(verif, 'verif', nInsns, samplesStr);
+
+        //         let verifTime;
+        //         withTimer(() => {
+        //             res = verif.check();
+        //             verifTime = elapsed();
+        //         });
+        //         stat['verif'] = verifTime;
+        //         d(2, `verif time: ${verifTime / 1e9:.3f}`);
+
+        //         if (res == sat) {
+        //             samples = [_evalModel(this.verif, this.inputs)];
+        //             d(4, 'verification model', verif.model());
+        //             d(4, 'verif sample', samples[0]);
+        //             verif.pop();
+        //         } else {
+        //             verif.pop();
+        //             d(1, 'no counterexample found');
+        //             return [prg, stats];
+        //         }
+        //     } else {
+        //         assert(res == unsat);
+        //         d(1, `synthesis failed for size ${nInsns}`);
+        //         return [null, stats];
+        //     }
+        // }
+    }
+}
+
 
 
 
