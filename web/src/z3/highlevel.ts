@@ -1348,45 +1348,45 @@ export async function synth(spec: Spec, ops: Func[], iter_range: number[], n_sam
 
 
 
-// console.log('')
-// console.log('### running the high-level API')
-// // let { Context } = await window.z3Promise;
-// //   let { Solver, Int } = Context('main');
-// const { Solver, Int } = ctx;
-// let solver = new Solver();
-// let x = Int.const('x');
-// solver.add(x.add(5).eq(9));
-// console.log(await solver.check());
-// console.log('x is', solver.model().get(x).toString());
-// const xval = solver.model().eval(x, true);
-// const xnum = asLong(xval);
-// console.log("x:", xval, xnum);
-// const b = x.ge(7);
-// const bval = solver.model().eval(b, true);
-// const bnum = asBool(bval);
-// console.log("b:", bval, bnum);
+console.log('')
+console.log('### running the high-level API')
+// let { Context } = await window.z3Promise;
+//   let { Solver, Int } = Context('main');
+const { Solver, Int } = ctx;
+let solver = new Solver();
+let x = Int.const('x');
+solver.add(x.add(5).eq(9));
+console.log(await solver.check());
+console.log('x is', solver.model().get(x).toString());
+const xval = solver.model().eval(x, true);
+const xnum = asLong(xval);
+console.log("x:", xval, xnum);
+const b = x.ge(7);
+const bval = solver.model().eval(b, true);
+const bnum = asBool(bval);
+console.log("b:", bval, bnum);
 
-// console.log("Collect vars");
-// console.log(Array.from(_collect_vars(x.add(5).eq(9))).map(x => x.toString()));
-// const y = Int.const('y');
-// console.log(Array.from(_collect_vars(x.add(y).eq(9))).map(x => x.toString()));
+console.log("Collect vars");
+console.log(Array.from(_collect_vars(x.add(5).eq(9))).map(x => x.toString()));
+const y = Int.const('y');
+console.log(Array.from(_collect_vars(x.add(y).eq(9))).map(x => x.toString()));
 
 
-// {
-//     // test_constant (L1112)
-//     console.log("");
-//     // const x = Int.const('x');
-//     // const y = Int.const('y');
-//     const x = ctx.BitVec.const('x', 32);
-//     const y = ctx.BitVec.const('y', 32);
-//     const mul = new Func("mul", x.mul(y));
-//     const spec = new Func("const", x.add(x));
+{
+    // test_constant (L1112)
+    console.log("");
+    // const x = Int.const('x');
+    // const y = Int.const('y');
+    const x = ctx.BitVec.const('x', 32);
+    const y = ctx.BitVec.const('y', 32);
+    const mul = new Func("mul", x.mul(y));
+    const spec = new Func("const", x.add(x));
 
-//     const [prg, stats] = await synth(spec, [mul], [1]);
+    const [prg, stats] = await synth(spec, [mul], [1]);
 
-//     console.log("prg:", prg);
-//     console.log(String(prg));
-// }
+    console.log("prg:", prg);
+    console.log(String(prg));
+}
 
 // // })().catch(e => {
 // //     console.error(e);

@@ -22,7 +22,8 @@ function astToZ3(ast: AST) {
   const ctx = synth.ctx;
   const get_var = (name: string, type:z3.Sort) => {
     if (var_map[name] === undefined) {
-      var_map[name] = ctx.Const(name, type);
+      // var_map[name] = ctx.Const(name, type);
+      var_map[name] = ctx.Int.const(name);
     }
     return var_map[name];
   };
